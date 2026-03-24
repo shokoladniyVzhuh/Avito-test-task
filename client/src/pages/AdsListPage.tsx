@@ -238,7 +238,7 @@ export function AdsListPage() {
 
   const itemsQuery = useQuery({
     queryKey: itemQueryKeys.list(query),
-    queryFn: () => getItems(query),
+    queryFn: ({ signal }) => getItems(query, signal),
     placeholderData: previousData => previousData,
   });
 

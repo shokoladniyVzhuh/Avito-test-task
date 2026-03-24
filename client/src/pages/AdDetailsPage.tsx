@@ -215,7 +215,7 @@ export function AdDetailsPage() {
 
   const itemQuery = useQuery({
     queryKey: itemQueryKeys.detail(itemId),
-    queryFn: () => getItemById(itemId),
+    queryFn: ({ signal }) => getItemById(itemId, signal),
     enabled: isValidItemId,
   });
 

@@ -157,7 +157,7 @@ function extractJsonPayload(rawResponse: string) {
   return trimmed;
 }
 
-async function generateStructuredResponse<T>(prompt: string) {
+async function generateStructuredResponse<T>(prompt: string, signal?: AbortSignal) {
   const response = await aiHttpClient.post<GenerateResponse>('/api/generate', {
     model: env.llmModel,
     system: sharedSystemPrompt,
@@ -167,6 +167,8 @@ async function generateStructuredResponse<T>(prompt: string) {
     options: {
       temperature: 0.2,
     },
+  }, {
+    signal,
   });
 
   return JSON.parse(extractJsonPayload(response.data.response)) as T;
@@ -218,7 +220,10 @@ function parseQuestionAnswer(payload: unknown): ItemQuestionAnswer {
   return { answer };
 }
 
-export async function generateDescriptionSuggestion(input: AiItemInput) {
+export async function generateDescriptionSuggestion(
+  input: AiItemInput,
+  signal?: AbortSignal,
+) {
   const prompt = [
     'Сгенерируй описание объявления для маркетплейса.',
     'Если описание уже есть, улучши его стиль и читаемость, но не меняй факты.',
@@ -234,11 +239,11 @@ export async function generateDescriptionSuggestion(input: AiItemInput) {
     buildItemContext(input),
   ].join('\n');
 
-  const payload = await generateStructuredResponse(prompt);
+  const payload = await generateStructuredResponse(prompt, signal);
   return parseDescriptionSuggestion(payload);
 }
 
-export async function generatePriceSuggestion(input: AiItemInput) {
+export async function generatePriceSuggestion(input: AiItemInput, signal?: AbortSignal) {
   const prompt = [
     'Оцени вероятную рыночную цену объявления в российских рублях.',
     'Учитывай категорию, характеристики, состояние и уже указанную цену, если она есть.',
@@ -254,7 +259,7 @@ export async function generatePriceSuggestion(input: AiItemInput) {
     buildItemContext(input),
   ].join('\n');
 
-  const payload = await generateStructuredResponse(prompt);
+  const payload = await generateStructuredResponse(prompt, signal);
   return parsePriceSuggestion(payload);
 }
 
@@ -262,6 +267,7 @@ export async function askItemQuestion(
   input: AiItemInput,
   question: string,
   history: AiChatMessage[],
+  signal?: AbortSignal,
 ) {
   const prompt = [
     'Ответь на уточняющий вопрос пользователя о конкретном объявлении.',
@@ -276,6 +282,6 @@ export async function askItemQuestion(
     `Новый вопрос пользователя: ${normalizeWhitespace(question)}`,
   ].join('\n');
 
-  const payload = await generateStructuredResponse(prompt);
+  const payload = await generateStructuredResponse(prompt, signal);
   return parseQuestionAnswer(payload);
 }

@@ -20,7 +20,14 @@ import {
   Title,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type MutableRefObject,
+} from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   askItemQuestion,
@@ -29,6 +36,7 @@ import {
   generatePriceSuggestion,
   type AiItemInput,
 } from '../shared/api/ai.ts';
+import { isRequestCanceled } from '../shared/api/http.ts';
 import {
   getItemById,
   itemQueryKeys,
@@ -66,6 +74,24 @@ const optionalWarningStyles = {
   label: { color: '#FFA940' },
   description: { color: '#FFA940' },
 } as const;
+
+function createAbortController(controllerRef: MutableRefObject<AbortController | null>) {
+  controllerRef.current?.abort();
+
+  const controller = new AbortController();
+  controllerRef.current = controller;
+
+  return controller;
+}
+
+function clearAbortController(
+  controllerRef: MutableRefObject<AbortController | null>,
+  controller: AbortController,
+) {
+  if (controllerRef.current === controller) {
+    controllerRef.current = null;
+  }
+}
 
 function isItemCategory(value: string): value is ItemCategory {
   return itemCategories.includes(value as ItemCategory);
@@ -347,6 +373,10 @@ export function AdEditPage() {
   const queryClient = useQueryClient();
   const formRef = useRef<HTMLFormElement | null>(null);
   const chatPanelRef = useRef<HTMLDivElement | null>(null);
+  const updateRequestControllerRef = useRef<AbortController | null>(null);
+  const descriptionRequestControllerRef = useRef<AbortController | null>(null);
+  const priceRequestControllerRef = useRef<AbortController | null>(null);
+  const questionRequestControllerRef = useRef<AbortController | null>(null);
   const itemId = Number(id);
   const isValidItemId = Number.isInteger(itemId) && itemId > 0;
   const draftStorageKey = getDraftStorageKey(itemId);
@@ -362,9 +392,18 @@ export function AdEditPage() {
   );
   const [chatQuestion, setChatQuestion] = useState('');
 
+  const abortPendingRequests = useCallback(() => {
+    updateRequestControllerRef.current?.abort();
+    descriptionRequestControllerRef.current?.abort();
+    priceRequestControllerRef.current?.abort();
+    questionRequestControllerRef.current?.abort();
+  }, []);
+
+  useEffect(() => abortPendingRequests, [abortPendingRequests]);
+
   const itemQuery = useQuery({
     queryKey: itemQueryKeys.detail(itemId),
-    queryFn: () => getItemById(itemId),
+    queryFn: ({ signal }) => getItemById(itemId, signal),
     enabled: isValidItemId,
   });
 
@@ -374,7 +413,6 @@ export function AdEditPage() {
     }
 
     const restoredDraft = restoreDraft(itemQuery.data, draftStorageKey);
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- the form is intentionally rehydrated when the loaded item or its draft changes.
     setFormValues(restoredDraft.values);
     setDraftRestored(restoredDraft.restored);
     setTouchedFields({});
@@ -385,7 +423,6 @@ export function AdEditPage() {
       return;
     }
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- the chat history is intentionally rehydrated when the loaded item changes.
     setChatMessages(restoreChatMessages(chatStorageKey));
     setChatQuestion('');
   }, [chatStorageKey, itemQuery.data]);
@@ -412,7 +449,15 @@ export function AdEditPage() {
   }, [chatMessages, chatStorageKey]);
 
   const updateMutation = useMutation({
-    mutationFn: (payload: UpdateItemPayload) => updateItem(itemId, payload),
+    mutationFn: async (payload: UpdateItemPayload) => {
+      const controller = createAbortController(updateRequestControllerRef);
+
+      try {
+        return await updateItem(itemId, payload, controller.signal);
+      } finally {
+        clearAbortController(updateRequestControllerRef, controller);
+      }
+    },
     onSuccess: async () => {
       if (typeof window !== 'undefined') {
         window.localStorage.removeItem(draftStorageKey);
@@ -429,7 +474,11 @@ export function AdEditPage() {
 
       navigate(`/ads/${itemId}`);
     },
-    onError: () => {
+    onError: error => {
+      if (isRequestCanceled(error)) {
+        return;
+      }
+
       notifications.show({
         title: 'Ошибка сохранения',
         message:
@@ -459,11 +508,23 @@ export function AdEditPage() {
   });
 
   const descriptionSuggestionMutation = useMutation({
-    mutationFn: (input: AiItemInput) => generateDescriptionSuggestion(input),
+    mutationFn: async (input: AiItemInput) => {
+      const controller = createAbortController(descriptionRequestControllerRef);
+
+      try {
+        return await generateDescriptionSuggestion(input, controller.signal);
+      } finally {
+        clearAbortController(descriptionRequestControllerRef, controller);
+      }
+    },
     onSuccess: () => {
       setDescriptionPopoverOpened(true);
     },
-    onError: () => {
+    onError: error => {
+      if (isRequestCanceled(error)) {
+        return;
+      }
+
       notifications.show({
         title: 'Не удалось получить описание',
         message: 'Попробуйте повторить запрос к AI ещё раз.',
@@ -474,11 +535,23 @@ export function AdEditPage() {
   });
 
   const priceSuggestionMutation = useMutation({
-    mutationFn: (input: AiItemInput) => generatePriceSuggestion(input),
+    mutationFn: async (input: AiItemInput) => {
+      const controller = createAbortController(priceRequestControllerRef);
+
+      try {
+        return await generatePriceSuggestion(input, controller.signal);
+      } finally {
+        clearAbortController(priceRequestControllerRef, controller);
+      }
+    },
     onSuccess: () => {
       setPricePopoverOpened(true);
     },
-    onError: () => {
+    onError: error => {
+      if (isRequestCanceled(error)) {
+        return;
+      }
+
       notifications.show({
         title: 'Не удалось получить цену',
         message: 'Попробуйте повторить запрос к AI ещё раз.',
@@ -497,11 +570,21 @@ export function AdEditPage() {
       input: AiItemInput;
       question: string;
       history: AiChatMessage[];
-    }) => askItemQuestion(input, question, history),
+    }) => {
+      const controller = createAbortController(questionRequestControllerRef);
+
+      return askItemQuestion(input, question, history, controller.signal).finally(() => {
+        clearAbortController(questionRequestControllerRef, controller);
+      });
+    },
     onSuccess: data => {
       setChatMessages(current => [...current, createChatMessage('assistant', data.answer)]);
     },
-    onError: () => {
+    onError: error => {
+      if (isRequestCanceled(error)) {
+        return;
+      }
+
       notifications.show({
         title: 'Не удалось получить ответ AI',
         message: 'Попробуйте повторить вопрос ещё раз.',
@@ -781,6 +864,7 @@ export function AdEditPage() {
   };
 
   const handleChatClear = () => {
+    questionRequestControllerRef.current?.abort();
     setChatMessages(getInitialChatMessages());
     setChatQuestion('');
     itemQuestionMutation.reset();
